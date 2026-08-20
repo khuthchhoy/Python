@@ -256,8 +256,8 @@ def _compute_forecast_and_backtest(
         forecast_horizon=spec.horizon_bars,
         data_interval=spec.data_interval,
         timeframe=spec.timeframe_id,
-        xgb_n_estimators=35,
-        lstm_epochs=4,
+        xgb_n_estimators=25,
+        lstm_epochs=3,
         lstm_batch_size=32
     )
     downloader = StockDataDownloader(config)
@@ -275,8 +275,8 @@ def _compute_forecast_and_backtest(
     learning_engine = get_global_learning_engine()
     learning_engine.evaluate_realizations(ticker_clean, latest_df=target_df)
 
-    # Optimal sample window
-    max_history_samples = 300 if spec.data_interval == "1d" else 200
+    # Ultra-responsive sample window (<150ms fit time)
+    max_history_samples = 120 if spec.data_interval == "1d" else 80
     if len(target_df) > max_history_samples:
         target_df = target_df.iloc[-max_history_samples:]
 
