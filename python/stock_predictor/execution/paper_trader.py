@@ -9,7 +9,7 @@ from stock_predictor.execution.risk_manager import RiskManager
 class PaperTrader:
     """
     Simulates real-world execution by receiving AI predictions
-    and routing them through the Risk Manager and Broker.
+    and routing them through the Risk Manager, Volume Profile Trade Planner, and Broker.
     """
     
     def __init__(self, initial_capital: float = 100000.0, state_file: Optional[str] = None):
@@ -22,7 +22,7 @@ class PaperTrader:
         self.state_file = state_file or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "portfolio.json"))
         
         self._load_state()
-        print(f"Paper Trader Initialized. Capital: ${self.risk_manager.current_capital:,.2f}")
+        print(f"Paper Trader Initialized with Volume Profile Risk Logic. Capital: ${self.risk_manager.current_capital:,.2f}")
 
     def on_forecast_received(self, forecast: dict):
         """
@@ -36,6 +36,7 @@ class PaperTrader:
         confidence = float(forecast.get("confidence_score", 50.0))
         expected_return = float(forecast.get("predicted_return_pct", 0.0))
         current_price = float(forecast.get("current_price", 0.0))
+        trade_plan = forecast.get("trade_plan", None)
         
         if current_price <= 0:
             return
@@ -43,11 +44,18 @@ class PaperTrader:
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {ticker} Signal: {signal} (Conf: {confidence:.1f}%) Price: ${current_price:.2f}")
         
         if "BUY" in signal:
-            self._handle_buy_signal(ticker, confidence, expected_return, current_price)
+            self._handle_buy_signal(ticker, confidence, expected_return, current_price, trade_plan)
         elif "SELL" in signal:
             self._handle_sell_signal(ticker, current_price)
 
-    def _handle_buy_signal(self, ticker: str, confidence: float, expected_return: float, current_price: float):
+    def _handle_buy_signal(
+        self,
+        ticker: str,
+        confidence: float,
+        expected_return: float,
+        current_price: float,
+        trade_plan: Optional[Any] = None
+    ):
         # Already hold position?
         if ticker in self.positions:
             return
@@ -74,17 +82,34 @@ class PaperTrader:
             
             # Record simulated fill
             fill_price = float(order["filled_avg_price"])
+
+            # Volume-Based Stop Loss and Target placement
+            sl = round(fill_price * 0.97, 2)
+            tp = round(fill_price * (1.0 + expected_return / 100.0), 2)
+            setup_name = None
+
+            if trade_plan:
+                if isinstance(trade_plan, dict):
+                    sl = float(trade_plan.get("stop_loss", sl))
+                    tp = float(trade_plan.get("target_1", tp))
+                    setup_name = trade_plan.get("volume_setup_name")
+                elif hasattr(trade_plan, "stop_loss"):
+                    sl = float(trade_plan.stop_loss)
+                    tp = float(trade_plan.target_1)
+                    setup_name = getattr(trade_plan, "volume_setup_name", None)
+
             self.positions[ticker] = {
                 "shares": shares,
                 "entry_price": fill_price,
-                "target_price": round(fill_price * (1.0 + expected_return / 100.0), 2),
-                "stop_loss": round(fill_price * 0.97, 2)  # 3% dynamic stop loss
+                "target_price": tp,
+                "stop_loss": sl,
+                "setup": setup_name or "Volume Profile Standard"
             }
             
             # Update Risk Manager capital (subtract cash)
             self.risk_manager.update_capital(self.risk_manager.current_capital - (shares * fill_price))
             
-            print(f" -> Executed BUY {shares} {ticker} @ ${fill_price:.2f}")
+            print(f" -> Executed BUY {shares} {ticker} @ ${fill_price:.2f} (SL: ${sl:.2f}, TP: ${tp:.2f})")
             self._save_state()
             
         except Exception as e:

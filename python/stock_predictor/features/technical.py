@@ -237,4 +237,32 @@ def calculate_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     hma_14 = diff_wma.ewm(span=sqrt_period, adjust=False).mean()
     feats["hma_14_ratio"] = (close - hma_14) / (close + 1e-8)
     
+    # 20. Vectorized Volume Profile Features (Trader Dale Methodology)
+    # Rolling Volume-Weighted Distribution & Point of Control (POC) Proxy
+    roll_w = 20
+    vp_vwap = (typical_price * vol).rolling(window=roll_w, min_periods=5).sum() / (vol.rolling(window=roll_w, min_periods=5).sum() + 1e-8)
+    vp_vwsd = np.sqrt(
+        (((typical_price - vp_vwap) ** 2) * vol).rolling(window=roll_w, min_periods=5).sum() / 
+        (vol.rolling(window=roll_w, min_periods=5).sum() + 1e-8)
+    )
+    
+    # Value Area approximation (70% normal distribution ~ 1.04 std deviations)
+    vp_vah = vp_vwap + (1.04 * vp_vwsd)
+    vp_val = vp_vwap - (1.04 * vp_vwsd)
+    
+    feats["vp_poc_dist_pct"] = (close - vp_vwap) / (close + 1e-8)
+    feats["vp_in_value_area"] = ((close >= vp_val) & (close <= vp_vah)).astype(float)
+    feats["vp_val_dist_pct"] = (close - vp_val) / (close + 1e-8)
+    feats["vp_vah_dist_pct"] = (close - vp_vah) / (close + 1e-8)
+    
+    # Volume Profile Shape Proxy: > 0 for P-Shape (Buyer Aggression), < 0 for b-Shape (Seller Aggression)
+    vp_range = (vp_vah - vp_val).replace(0, 1e-8)
+    feats["vp_shape_skew"] = (vp_vwap - ((vp_vah + vp_val) / 2.0)) / vp_range
+    
+    # Institutional Volume Accumulation / Absorption Index
+    candle_body = (close - open_p)
+    candle_range = (high - low).replace(0, 1e-8)
+    feats["vp_accumulation_index"] = (candle_body / candle_range) * (vol / (vol_sma_20 + 1e-8))
+    
     return feats
+
