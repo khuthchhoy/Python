@@ -34,10 +34,11 @@ def main():
             "--server.headless", "true"
         ])
     else:
+        tf = f"{args.horizon}d" if args.horizon else "1w"
         run_prediction(
             ticker=args.ticker,
+            timeframe=tf,
             start_date=args.start_date,
-            horizon=args.horizon,
             force_synthetic=args.synthetic
         )
 

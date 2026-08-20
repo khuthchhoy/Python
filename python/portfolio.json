@@ -1,0 +1,15 @@
+{
+  "capital": 80200.0,
+  "peak_capital": 100000,
+  "initial_capital": 100000,
+  "positions": {
+    "AAPL": {
+      "shares": 90,
+      "entry_price": 220.0,
+      "target_price": 227.7,
+      "stop_loss": 213.4
+    }
+  },
+  "trade_history": [],
+  "total_pnl": 0
+}
