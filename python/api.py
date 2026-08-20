@@ -66,6 +66,45 @@ class HorizonPoint(BaseModel):
     target_time: str
 
 
+class VolumeNodeResponse(BaseModel):
+    price: float
+    volume: float
+    relative_volume: float
+    is_poc: bool = False
+    in_value_area: bool = False
+    is_hvn: bool = False
+    is_lvn: bool = False
+
+
+class VolumeSetupResponse(BaseModel):
+    name: str
+    setup_type: str
+    bias: str
+    entry_level: float
+    stop_loss_level: float
+    target_level: float
+    confidence: float
+    description: str
+    is_tested: bool = False
+    touch_count: int = 0
+
+
+class VolumeProfileResponse(BaseModel):
+    poc_price: float
+    vah_price: float
+    val_price: float
+    total_volume: float
+    profile_shape: str
+    shape_description: str
+    nodes: List[VolumeNodeResponse] = []
+    hvns: List[float] = []
+    lvns: List[float] = []
+    detected_setups: List[VolumeSetupResponse] = []
+    poc_distance_pct: float = 0.0
+    is_in_value_area: bool = True
+    virgin_poc_count: int = 0
+
+
 class TradePlanResponse(BaseModel):
     action: str
     entry_zone_low: float
@@ -81,6 +120,8 @@ class TradePlanResponse(BaseModel):
     var_99_pct: float
     kelly_size_pct: float
     execution_strategy: str
+    volume_setup_name: Optional[str] = None
+    is_virgin_level: bool = True
 
 
 class SupportResistanceResponse(BaseModel):
@@ -97,6 +138,10 @@ class SupportResistanceResponse(BaseModel):
     fib_618: float
     nearest_level_distance_pct: float
     nearest_level_type: str
+    poc_level: Optional[float] = None
+    vah_level: Optional[float] = None
+    val_level: Optional[float] = None
+    volume_nodes: Optional[List[float]] = None
 
 
 class FactorScoresResponse(BaseModel):
@@ -106,6 +151,7 @@ class FactorScoresResponse(BaseModel):
     flow_score: float
     composite_score: float
     verdict: str
+    volume_profile_score: Optional[float] = 50.0
 
 
 class MarketRegimeResponse(BaseModel):
@@ -147,6 +193,7 @@ class AnalystReportResponse(BaseModel):
     model_track_record_summary: str
     factor_scores: FactorScoresResponse
     detected_patterns: List[str]
+    volume_profile_summary: Optional[str] = None
 
 
 class ForecastResponse(BaseModel):
@@ -180,6 +227,9 @@ class ForecastResponse(BaseModel):
     analyst_report: Optional[AnalystReportResponse] = None
     learning_metrics: Optional[LearningTelemetryResponse] = None
     patterns_detected: Optional[List[str]] = None
+    volume_profile: Optional[VolumeProfileResponse] = None
+    volume_setups: Optional[List[VolumeSetupResponse]] = None
+
 
 
 class BacktestSummaryResponse(BaseModel):
@@ -355,7 +405,9 @@ def _compute_forecast_and_backtest(
             var_95_pct=tp.var_95_pct,
             var_99_pct=tp.var_99_pct,
             kelly_size_pct=tp.kelly_size_pct,
-            execution_strategy=tp.execution_strategy
+            execution_strategy=tp.execution_strategy,
+            volume_setup_name=getattr(tp, "volume_setup_name", None),
+            is_virgin_level=getattr(tp, "is_virgin_level", True)
         )
 
     # Convert Support & Resistance
@@ -375,7 +427,11 @@ def _compute_forecast_and_backtest(
             fib_500=sr.fib_500,
             fib_618=sr.fib_618,
             nearest_level_distance_pct=sr.nearest_level_distance_pct,
-            nearest_level_type=sr.nearest_level_type
+            nearest_level_type=sr.nearest_level_type,
+            poc_level=getattr(sr, "poc_level", None),
+            vah_level=getattr(sr, "vah_level", None),
+            val_level=getattr(sr, "val_level", None),
+            volume_nodes=getattr(sr, "volume_nodes", None)
         )
 
     # Convert Factor Scores
@@ -388,7 +444,57 @@ def _compute_forecast_and_backtest(
             volatility_score=fs.volatility_score,
             flow_score=fs.flow_score,
             composite_score=fs.composite_score,
-            verdict=fs.verdict
+            verdict=fs.verdict,
+            volume_profile_score=getattr(fs, "volume_profile_score", 50.0)
+        )
+
+    # Convert Volume Profile
+    vp_resp = None
+    setups_resp: List[VolumeSetupResponse] = []
+    if forecast.volume_profile:
+        vp = forecast.volume_profile
+        nodes_list = [
+            VolumeNodeResponse(
+                price=n.price,
+                volume=n.volume,
+                relative_volume=n.relative_volume,
+                is_poc=n.is_poc,
+                in_value_area=n.in_value_area,
+                is_hvn=n.is_hvn,
+                is_lvn=n.is_lvn
+            )
+            for n in getattr(vp, "nodes", [])
+        ]
+        setups_list = [
+            VolumeSetupResponse(
+                name=s.name,
+                setup_type=s.setup_type,
+                bias=s.bias,
+                entry_level=s.entry_level,
+                stop_loss_level=s.stop_loss_level,
+                target_level=s.target_level,
+                confidence=s.confidence,
+                description=s.description,
+                is_tested=s.is_tested,
+                touch_count=s.touch_count
+            )
+            for s in getattr(vp, "detected_setups", [])
+        ]
+        setups_resp = setups_list
+        vp_resp = VolumeProfileResponse(
+            poc_price=vp.poc_price,
+            vah_price=vp.vah_price,
+            val_price=vp.val_price,
+            total_volume=vp.total_volume,
+            profile_shape=vp.profile_shape,
+            shape_description=vp.shape_description,
+            nodes=nodes_list,
+            hvns=vp.hvns,
+            lvns=vp.lvns,
+            detected_setups=setups_list,
+            poc_distance_pct=vp.poc_distance_pct,
+            is_in_value_area=vp.is_in_value_area,
+            virgin_poc_count=getattr(vp, "virgin_poc_count", 0)
         )
 
     # Convert Market Regime
@@ -441,7 +547,8 @@ def _compute_forecast_and_backtest(
             contrarian_risks=ar.contrarian_risks,
             model_track_record_summary=ar.model_track_record_summary,
             factor_scores=fs_resp,
-            detected_patterns=ar.detected_patterns
+            detected_patterns=ar.detected_patterns,
+            volume_profile_summary=getattr(ar, "volume_profile_summary", None)
         )
 
     fc_resp = ForecastResponse(
@@ -485,8 +592,11 @@ def _compute_forecast_and_backtest(
         market_regime=mr_resp,
         analyst_report=ar_resp,
         learning_metrics=lt_resp,
-        patterns_detected=forecast.detected_patterns
+        patterns_detected=forecast.detected_patterns,
+        volume_profile=vp_resp,
+        volume_setups=setups_resp
     )
+
 
     bt_resp = BacktestSummaryResponse(
         ticker=ticker_clean,
@@ -1093,10 +1203,12 @@ async def websocket_live_stream(
                 "direction_prob": fc_resp.direction_prob,
                 "multi_horizon_path": [hp.model_dump() for hp in (fc_resp.multi_horizon_path or [])],
                 "trade_plan": fc_resp.trade_plan.model_dump() if fc_resp.trade_plan else None,
-                "factor_scores": fc_resp.factor_scores.model_dump() if fc_resp.factor_scores else None
+                "factor_scores": fc_resp.factor_scores.model_dump() if fc_resp.factor_scores else None,
+                "volume_profile": fc_resp.volume_profile.model_dump() if fc_resp.volume_profile else None
             }
             
             await websocket.send_text(json.dumps(payload))
+
             tick_id += 1
             await asyncio.sleep(2.0)
             
