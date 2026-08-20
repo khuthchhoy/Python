@@ -81,9 +81,9 @@ class AlgorithmicTradePlanner:
             entry_high = round(max(current_price, entry_low + (current_price * 0.005)), 2)
 
             # Volatility-Adjusted Dynamic Stop-Loss
-            # Placed below support 1 by 0.5 * ATR
+            # Placed below support 1 by 0.5 * ATR with strict ceiling below current price
             raw_sl = min(entry_low * 0.99, levels.support_1 - (atr * 0.5))
-            sl = round(max(raw_sl, current_price * 0.90), 2)
+            sl = round(min(current_price * 0.99, max(raw_sl, current_price * 0.90)), 2)
             sl_pct = round(((sl - current_price) / current_price) * 100.0, 2)
 
             # Take Profit Targets
@@ -94,15 +94,15 @@ class AlgorithmicTradePlanner:
             t2_pct = round(((t2 - current_price) / current_price) * 100.0, 2)
 
             # Risk-Reward Ratio
-            downside_risk = abs(sl_pct)
-            upside_reward = t1_pct
-            rrr = round(upside_reward / (downside_risk + 1e-8), 2)
+            downside_risk = max(0.5, abs(sl_pct))
+            upside_reward = max(0.5, t1_pct)
+            rrr = round(upside_reward / downside_risk, 2)
 
             # Half-Kelly Position Sizing: f* = 0.5 * (p - q/b) where b = rrr, p = dir_prob, q = 1 - p
             p_win = np.clip(direction_prob, 0.40, 0.85)
             q_lose = 1.0 - p_win
             b_ratio = max(0.8, rrr)
-            kelly_raw = 0.5 * (p_win - (q_lose / b_ratio))
+            kelly_raw = max(0.0, 0.5 * (p_win - (q_lose / b_ratio)))
             kelly_pct = round(float(np.clip(kelly_raw * 100.0 * regime.risk_multiplier, 0.0, 25.0)), 1)
 
         elif is_bearish:
@@ -112,8 +112,9 @@ class AlgorithmicTradePlanner:
             entry_high = round(max(current_price * 1.008, min(levels.resistance_1, current_price * 1.015)), 2)
             entry_low = round(min(current_price, entry_high - (current_price * 0.005)), 2)
 
-            # Stop loss above resistance
-            sl = round(max(entry_high * 1.01, levels.resistance_1 + (atr * 0.5)), 2)
+            # Stop loss strictly above current price and resistance
+            raw_sl = max(entry_high * 1.01, levels.resistance_1 + (atr * 0.5))
+            sl = round(max(current_price * 1.01, min(raw_sl, current_price * 1.10)), 2)
             sl_pct = round(((sl - current_price) / current_price) * 100.0, 2)
 
             t1 = round(min(levels.support_1, current_price * 0.985, predicted_price * 1.05), 2)
@@ -122,20 +123,26 @@ class AlgorithmicTradePlanner:
             t1_pct = round(((t1 - current_price) / current_price) * 100.0, 2)
             t2_pct = round(((t2 - current_price) / current_price) * 100.0, 2)
 
-            downside_risk = abs(sl_pct)
-            upside_reward = abs(t1_pct)
-            rrr = round(upside_reward / (downside_risk + 1e-8), 2)
-            kelly_pct = round(float(np.clip((1.0 - direction_prob) * 10.0 * regime.risk_multiplier, 0.0, 15.0)), 1)
+            downside_risk = max(0.5, abs(sl_pct))
+            upside_reward = max(0.5, abs(t1_pct))
+            rrr = round(upside_reward / downside_risk, 2)
+
+            # Sound Half-Kelly for short regime
+            p_win_short = np.clip(1.0 - direction_prob, 0.40, 0.85)
+            q_lose_short = 1.0 - p_win_short
+            b_ratio_short = max(0.8, rrr)
+            kelly_raw_short = max(0.0, 0.5 * (p_win_short - (q_lose_short / b_ratio_short)))
+            kelly_pct = round(float(np.clip(kelly_raw_short * 100.0 * regime.risk_multiplier, 0.0, 15.0)), 1)
 
         else:
             action = "HOLD / MONITOR"
             exec_strat = "Market is in neutral consolidation; await decisive breakout before deploying risk."
             entry_low = round(current_price * 0.995, 2)
             entry_high = round(current_price * 1.005, 2)
-            sl = round(levels.support_1, 2)
+            sl = round(min(current_price * 0.985, levels.support_1), 2)
             sl_pct = round(((sl - current_price) / current_price) * 100.0, 2)
-            t1 = round(levels.resistance_1, 2)
-            t2 = round(levels.resistance_2, 2)
+            t1 = round(max(current_price * 1.015, levels.resistance_1), 2)
+            t2 = round(max(current_price * 1.03, levels.resistance_2), 2)
             t1_pct = round(((t1 - current_price) / current_price) * 100.0, 2)
             t2_pct = round(((t2 - current_price) / current_price) * 100.0, 2)
             rrr = 1.0

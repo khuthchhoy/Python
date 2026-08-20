@@ -1,5 +1,5 @@
 """Production-Grade Market Data Downloader with direct Yahoo Finance v8/v10 chart engine,
-multi-asset alignment, local parquet caching, and intraday support.
+Stooq Financial API fallback, multi-asset alignment, local parquet caching, and intraday support.
 """
 
 import os
@@ -31,15 +31,13 @@ def _fetch_yahoo_v8_chart(
     period: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    timeout: int = 8
+    timeout: int = 6
 ) -> Optional[pd.DataFrame]:
     """
-    Directly queries Yahoo Finance v8 Chart JSON API.
-    Bypasses standard yfinance cookie/crumb issues, returning sub-second live data.
+    Directly queries Yahoo Finance v8 Chart JSON API with fallback hosts and browser headers.
     """
     encoded_ticker = urllib.parse.quote(ticker.strip().upper())
     
-    # Map intervals to Yahoo standard intervals
     interval_map = {
         "1m": "1m", "2m": "2m", "5m": "5m", "15m": "15m",
         "30m": "30m", "60m": "60m", "1h": "1h", "1d": "1d",
@@ -64,7 +62,6 @@ def _fetch_yahoo_v8_chart(
         except Exception:
             params["range"] = period or "2y"
     elif period:
-        # Standardize period strings for Yahoo
         period_norm = period.lower().replace("d", "d").replace("mo", "mo").replace("y", "y")
         if period_norm in ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]:
             params["range"] = period_norm
@@ -115,9 +112,7 @@ def _fetch_yahoo_v8_chart(
                     
                     adjcloses = indicators.get("adjclose", [{}])[0].get("adjclose", closes)
                     
-                    # Convert to DataFrame
                     dt_index = pd.to_datetime(timestamps, unit="s", utc=True)
-                    # Convert to US/Eastern or drop tz for consistency
                     dt_index = dt_index.tz_convert("America/New_York").tz_localize(None)
                     
                     df = pd.DataFrame({
@@ -131,7 +126,6 @@ def _fetch_yahoo_v8_chart(
                     
                     df.index.name = "Date"
                     
-                    # Clean missing values
                     df["Volume"] = df["Volume"].fillna(0).astype(np.int64)
                     df["Close"] = df["Close"].ffill().bfill()
                     df["Open"] = df["Open"].fillna(df["Close"])
@@ -146,6 +140,37 @@ def _fetch_yahoo_v8_chart(
             logger.debug(f"Direct Yahoo fetch attempt failed for {ticker} from {url}: {e}")
             continue
 
+    return None
+
+
+def _fetch_stooq_chart(ticker: str, timeout: int = 5) -> Optional[pd.DataFrame]:
+    """
+    Fetches real-world historical OHLCV data from Stooq API (100% free open quant finance endpoint).
+    """
+    clean_sym = ticker.strip().lower()
+    if clean_sym.startswith("^"):
+        stooq_sym = clean_sym.replace("^", "")
+    else:
+        stooq_sym = f"{clean_sym}.us"
+        
+    url = f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": USER_AGENT}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                df = pd.read_csv(response)
+                if df is not None and len(df) >= 10 and "Close" in df.columns:
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df.set_index("Date", inplace=True)
+                    df.sort_index(inplace=True)
+                    if "Adj Close" not in df.columns:
+                        df["Adj Close"] = df["Close"]
+                    return df[["Open", "High", "Low", "Close", "Adj Close", "Volume"]]
+    except Exception as e:
+        logger.debug(f"Stooq fetch failed for {ticker}: {e}")
     return None
 
 
@@ -176,7 +201,7 @@ class StockDataDownloader:
         force_synthetic: bool = False
     ) -> pd.DataFrame:
         """
-        Download historical OHLCV data (daily or intraday) for a ticker with automatic caching and fallback.
+        Download historical OHLCV data (daily or intraday) for a ticker with automatic multi-source fallback.
         """
         ticker_clean = ticker.strip().upper()
         
@@ -195,7 +220,6 @@ class StockDataDownloader:
                 if (time.time() - mtime) < (exp_hours * 3600):
                     df = pd.read_parquet(cache_path)
                     if len(df) > 10:
-                        logger.info(f"Loaded cached {interval} data for {ticker_clean} ({len(df)} bars)")
                         self.last_was_synthetic = False
                         return df
             except Exception as e:
@@ -203,17 +227,15 @@ class StockDataDownloader:
 
         # 2. Force synthetic if requested
         if force_synthetic:
-            logger.info(f"Generating synthetic {interval} data for {ticker_clean}")
             self.last_was_synthetic = True
             if interval != "1d":
                 df = generate_synthetic_intraday_data(ticker=ticker_clean, interval=interval, initial_price=custom_price)
             else:
-                df = generate_synthetic_stock_data(ticker=ticker_clean, start_date=start_date or "2020-01-01", end_date=end_date, initial_price=custom_price)
+                df = generate_synthetic_stock_data(ticker=ticker_clean, start_date=start_date, end_date=end_date, initial_price=custom_price)
             return df
 
         # 3. Direct Yahoo Finance v8/v10 Chart Engine
         try:
-            logger.info(f"Fetching live market data for {ticker_clean} ({interval})...")
             df_direct = _fetch_yahoo_v8_chart(
                 ticker=ticker_clean,
                 interval=interval,
@@ -223,22 +245,32 @@ class StockDataDownloader:
             )
             
             if df_direct is not None and len(df_direct) >= 10:
-                # Cache to disk
                 try:
                     df_direct.to_parquet(cache_path)
-                except Exception as cache_err:
-                    logger.debug(f"Cache write error for {ticker_clean}: {cache_err}")
-                    
+                except Exception:
+                    pass
                 self.last_was_synthetic = False
                 return df_direct
         except Exception as direct_err:
             logger.warning(f"Direct Yahoo chart fetch failed for {ticker_clean}: {direct_err}")
 
-        # 4. Fallback to yfinance Ticker.history()
+        # 4. Stooq Free Quant Engine Fallback (Daily)
+        if interval == "1d":
+            try:
+                df_stooq = _fetch_stooq_chart(ticker=ticker_clean)
+                if df_stooq is not None and len(df_stooq) >= 10:
+                    try:
+                        df_stooq.to_parquet(cache_path)
+                    except Exception:
+                        pass
+                    self.last_was_synthetic = False
+                    return df_stooq
+            except Exception as stooq_err:
+                logger.debug(f"Stooq fallback failed for {ticker_clean}: {stooq_err}")
+
+        # 5. yfinance Ticker.history() Fallback
         try:
             import yfinance as yf
-            logger.info(f"Attempting secondary yfinance history fetch for {ticker_clean}...")
-            
             yf_tick = yf.Ticker(ticker_clean)
             if period:
                 data = yf_tick.history(period=period, interval=interval, auto_adjust=False)
@@ -275,14 +307,14 @@ class StockDataDownloader:
                 self.last_was_synthetic = False
                 return df
         except Exception as yf_err:
-            logger.warning(f"yfinance history download failed for {ticker_clean} ({yf_err}). Falling back to calibrated stochastic simulator.")
+            logger.warning(f"yfinance history download failed for {ticker_clean}: {yf_err}")
 
-        # 5. Final fallback: Realistic Calibrated Stochastic Generator
+        # 6. Realistic Calibrated Stochastic Generator ending at today's date
         self.last_was_synthetic = True
         if interval != "1d":
             df = generate_synthetic_intraday_data(ticker=ticker_clean, interval=interval, initial_price=custom_price)
         else:
-            df = generate_synthetic_stock_data(ticker=ticker_clean, start_date=start_date or "2020-01-01", end_date=end_date, initial_price=custom_price)
+            df = generate_synthetic_stock_data(ticker=ticker_clean, start_date=start_date, end_date=end_date, initial_price=custom_price)
         return df
 
     def fetch_market_dataset(
@@ -297,8 +329,7 @@ class StockDataDownloader:
         force_synthetic: bool = False
     ) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
         """
-        Download target stock along with benchmark market indices (SPY, ^VIX)
-        and align timestamps.
+        Download target stock along with benchmark market indices (SPY, ^VIX) and align timestamps.
         """
         target_df = self.fetch_ticker_data(
             target_ticker,
@@ -310,7 +341,6 @@ class StockDataDownloader:
             use_cache=use_cache,
             force_synthetic=force_synthetic
         )
-        target_is_synthetic = self.last_was_synthetic
         
         benchmarks = {}
         if interval == "1d":
@@ -330,5 +360,4 @@ class StockDataDownloader:
                     except Exception as e:
                         logger.warning(f"Could not load benchmark {bm_ticker}: {e}")
                         
-        self.last_was_synthetic = target_is_synthetic
         return target_df, benchmarks

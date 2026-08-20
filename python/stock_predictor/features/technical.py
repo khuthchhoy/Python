@@ -43,14 +43,14 @@ def calculate_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     sma_50 = close.rolling(window=50, min_periods=10).mean()
     feats["ma_20_50_ratio"] = (sma_20 - sma_50) / (sma_50 + 1e-8)
     
-    # 4. Multi-Period RSI (7, 14, 21) & Stochastic RSI
+    # 4. Multi-Period Wilder's RSI (7, 14, 21) & Stochastic RSI
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
     for rsi_period in [7, 14, 21]:
-        avg_gain = gain.rolling(window=rsi_period, min_periods=3).mean()
-        avg_loss = loss.rolling(window=rsi_period, min_periods=3).mean()
+        avg_gain = gain.ewm(alpha=1.0 / rsi_period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / rsi_period, adjust=False).mean()
         rs = avg_gain / (avg_loss + 1e-8)
         rsi_val = 100.0 - (100.0 / (1.0 + rs))
         feats[f"rsi_{rsi_period}"] = rsi_val / 100.0  # Normalize to [0, 1]

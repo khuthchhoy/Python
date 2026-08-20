@@ -36,14 +36,18 @@ class QuantitativeFactorScorer:
         vol = df["Volume"].astype(float)
         cur_p = float(close.iloc[-1])
 
-        # 1. Momentum Factor Score
+        # 1. Momentum Factor Score (Wilder's RSI + Multi-period returns)
         ret_5 = (cur_p / float(close.iloc[-min(5, len(close))]) - 1.0) * 100.0
         ret_20 = (cur_p / float(close.iloc[-min(20, len(close))]) - 1.0) * 100.0
         
         delta = close.diff()
-        gain = delta.clip(lower=0).rolling(14, min_periods=3).mean()
-        loss = (-delta.clip(upper=0)).rolling(14, min_periods=3).mean()
-        rsi = 100.0 - (100.0 / (1.0 + (gain / (loss + 1e-8))))
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        # Wilder's Exponential Smoothing
+        avg_gain = gain.ewm(alpha=1.0 / 14.0, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / 14.0, adjust=False).mean()
+        rs = avg_gain / (avg_loss + 1e-8)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
         cur_rsi = float(rsi.iloc[-1])
 
         raw_mom = (ret_5 * 2.0 + ret_20 + (cur_rsi - 50.0))
@@ -75,8 +79,13 @@ class QuantitativeFactorScorer:
         vol_score = float(np.clip(95.0 - (natr_pct * 12.0), 10.0, 95.0))
 
         # 4. Money Flow & Liquidity Factor Score
-        clv = ((close - low) - (high - close)) / ((high - low) + 1e-8)
-        cmf_20 = float(((clv * vol).rolling(min(20, len(df)), min_periods=3).sum() / (vol.rolling(min(20, len(df)), min_periods=3).sum() + 1e-8)).iloc[-1])
+        hl_spread = (high - low).replace(0, 1e-8)
+        clv = ((close - low) - (high - close)) / hl_spread
+        clv = np.nan_to_num(clv, nan=0.0)
+        vol_window = min(20, len(df))
+        cmf_denom = vol.rolling(vol_window, min_periods=3).sum() + 1e-8
+        cmf_num = (pd.Series(clv, index=df.index) * vol).rolling(vol_window, min_periods=3).sum()
+        cmf_20 = float((cmf_num / cmf_denom).iloc[-1])
         
         flow_pts = 50.0 + (cmf_20 * 120.0)
         flow_score = float(np.clip(flow_pts, 5.0, 95.0))

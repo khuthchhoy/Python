@@ -1,40 +1,41 @@
-"""Synthetic Market Data Generator with realistic ticker price anchors."""
+"""Synthetic Market Data Generator with realistic ticker price anchors and current timestamps."""
 
 from typing import Tuple, Optional, Dict
 import hashlib
+import time
 import numpy as np
 import pandas as pd
 
-# Known anchor prices for major market assets (fallback when offline/sandboxed)
+# Real-world calibrated anchor prices for major market assets
 KNOWN_TICKER_PRICES: Dict[str, float] = {
     "DELL": 138.50,
-    "NVDA": 218.50,
-    "AAPL": 316.50,
-    "MSFT": 485.00,
-    "TSLA": 298.00,
-    "AMZN": 224.50,
-    "GOOGL": 195.00,
-    "GOOG": 196.00,
-    "META": 645.00,
-    "SPY": 770.00,
-    "QQQ": 560.00,
-    "AMD": 168.00,
-    "AVGO": 182.00,
-    "NFLX": 820.00,
-    "PLTR": 62.50,
-    "COIN": 265.00,
-    "MSTR": 380.00,
-    "INTC": 24.50,
-    "SMCI": 48.00,
-    "LLY": 890.00,
-    "JPM": 242.00,
-    "BAC": 44.50,
-    "WMT": 92.00,
-    "COST": 965.00,
-    "BABA": 98.00,
+    "NVDA": 128.50,
+    "AAPL": 224.50,
+    "MSFT": 448.00,
+    "TSLA": 215.00,
+    "AMZN": 186.00,
+    "GOOGL": 165.00,
+    "GOOG": 166.00,
+    "META": 530.00,
+    "SPY": 560.00,
+    "QQQ": 480.00,
+    "AMD": 145.00,
+    "AVGO": 160.00,
+    "NFLX": 680.00,
+    "PLTR": 32.50,
+    "COIN": 210.00,
+    "MSTR": 140.00,
+    "INTC": 20.50,
+    "SMCI": 45.00,
+    "LLY": 920.00,
+    "JPM": 215.00,
+    "BAC": 39.50,
+    "WMT": 74.00,
+    "COST": 880.00,
+    "BABA": 84.00,
     "^VIX": 15.30,
-    "^GSPC": 6050.00,
-    "^DJI": 44200.00,
+    "^GSPC": 5600.00,
+    "^DJI": 40800.00,
 }
 
 
@@ -54,7 +55,7 @@ def get_anchor_price_for_ticker(ticker: str, custom_price: Optional[float] = Non
 
 def generate_synthetic_stock_data(
     ticker: str = "SYNTH",
-    start_date: str = "2020-01-01",
+    start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     n_days: int = 1200,
     initial_price: Optional[float] = None,
@@ -63,20 +64,25 @@ def generate_synthetic_stock_data(
     seed: int = 42
 ) -> pd.DataFrame:
     """
-    Generate realistic synthetic daily OHLCV data ending at the ticker's real-world price anchor.
+    Generate realistic synthetic daily OHLCV data ending at TODAY's date and the ticker's real-world price anchor.
     """
     rng = np.random.default_rng(seed)
     anchor_price = get_anchor_price_for_ticker(ticker, initial_price)
     
+    # Anchor to today's date if end_date is None
     if end_date is None:
-        dates = pd.bdate_range(start=start_date, periods=n_days)
+        today = pd.Timestamp.now().normalize()
+        dates = pd.bdate_range(end=today, periods=n_days)
     else:
-        dates = pd.bdate_range(start=start_date, end=end_date)
-        n_days = len(dates)
+        if start_date is None:
+            dates = pd.bdate_range(end=pd.Timestamp(end_date), periods=n_days)
+        else:
+            dates = pd.bdate_range(start=start_date, end=end_date)
+            n_days = len(dates)
         
     dt = 1.0 / 252.0  # Daily time-step
     
-    # Stochastic volatility
+    # Stochastic volatility (Heston-style process)
     vol = np.zeros(n_days)
     vol[0] = annual_volatility
     kappa = 2.0
@@ -150,44 +156,34 @@ def generate_synthetic_intraday_data(
     seed: int = 42
 ) -> pd.DataFrame:
     """
-    Generate high-frequency intraday stock bars ending at the ticker's real-world price anchor.
+    Generate high-frequency synthetic OHLCV intraday bars ending at the current time.
     """
     rng = np.random.default_rng(seed)
     anchor_price = get_anchor_price_for_ticker(ticker, initial_price)
     
-    if interval == "1m":
-        step_min = 1
-    elif interval == "5m":
-        step_min = 5
-    elif interval == "15m":
-        step_min = 15
-    elif interval == "30m":
-        step_min = 30
-    elif interval in ["1h", "60m"]:
-        step_min = 60
-    else:
-        step_min = 5
-        
-    now = pd.Timestamp.now().floor(f"{step_min}min")
-    timestamps = [now - pd.Timedelta(minutes=(n_bars - 1 - i) * step_min) for i in range(n_bars)]
+    now = pd.Timestamp.now().floor("min")
+    freq_map = {
+        "1m": "1min", "2m": "2min", "5m": "5min", "15m": "15min",
+        "30m": "30min", "1h": "1h", "4h": "4h"
+    }
+    freq = freq_map.get(interval, "5min")
+    dates = pd.date_range(end=now, periods=n_bars, freq=freq)
     
-    dt = (step_min / 390.0) / 252.0
+    mins_per_bar = {
+        "1m": 1, "2m": 2, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240
+    }.get(interval, 5)
+    
+    dt = (mins_per_bar / (252.0 * 390.0))
     bar_vol = annual_volatility * np.sqrt(dt)
     
-    log_returns = np.zeros(n_bars)
-    for i in range(1, n_bars):
-        ts = timestamps[i]
-        minute_of_day = ts.hour * 60 + ts.minute
-        dist_from_open = abs(minute_of_day - 570)
-        dist_from_close = abs(minute_of_day - 960)
-        edge_dist = min(dist_from_open, dist_from_close)
-        u_factor = np.clip(1.8 - (edge_dist / 180.0), 0.6, 2.5)
-        
-        effective_vol = bar_vol * u_factor
-        log_returns[i] = rng.normal(0, effective_vol)
-        
+    log_returns = rng.normal(0.00005, bar_vol, size=n_bars)
+    
+    # Add intraday U-shape volatility curve (higher volatility at market open/close)
+    hours = dates.hour + dates.minute / 60.0
+    u_shape = 1.0 + 0.8 * np.exp(-((hours - 9.5) / 1.0)**2) + 0.6 * np.exp(-((hours - 16.0) / 1.0)**2)
+    log_returns *= u_shape
+    
     cum_returns = np.exp(np.cumsum(log_returns))
-    # Scale series so the final closing price exactly matches anchor_price
     closes = anchor_price * (cum_returns / cum_returns[-1])
     
     opens = np.zeros(n_bars)
@@ -195,32 +191,19 @@ def generate_synthetic_intraday_data(
     lows = np.zeros(n_bars)
     volumes = np.zeros(n_bars, dtype=int)
     
-    for i in range(n_bars):
-        ts = timestamps[i]
-        minute_of_day = ts.hour * 60 + ts.minute
-        edge_dist = min(abs(minute_of_day - 570), abs(minute_of_day - 960))
-        u_factor = np.clip(1.8 - (edge_dist / 180.0), 0.6, 2.5)
-        effective_vol = bar_vol * u_factor
+    opens[0] = closes[0]
+    highs[0] = closes[0] * 1.001
+    lows[0] = closes[0] * 0.999
+    volumes[0] = 5000
+    
+    for t in range(1, n_bars):
+        opens[t] = closes[t-1]
+        noise = abs(rng.normal(0, bar_vol * 0.5))
+        highs[t] = max(opens[t], closes[t]) * (1.0 + noise)
+        lows[t] = min(opens[t], closes[t]) * (1.0 - noise)
         
-        if i == 0:
-            open_p = closes[0]
-        else:
-            open_p = closes[i-1] * (1.0 + rng.normal(0, effective_vol * 0.2))
-            
-        close_p = closes[i]
-        high_spread = abs(rng.normal(0, effective_vol * 0.8))
-        low_spread = abs(rng.normal(0, effective_vol * 0.8))
-        high_p = max(open_p, close_p) * (1.0 + high_spread)
-        low_p = min(open_p, close_p) * (1.0 - low_spread)
-        
-        base_vol = rng.lognormal(mean=11.0, sigma=0.5)
-        ret = abs((close_p - open_p) / open_p) if open_p > 0 else 0.0
-        vol_val = int(base_vol * u_factor * (1.0 + 8.0 * ret))
-        
-        opens[i] = open_p
-        highs[i] = high_p
-        lows[i] = low_p
-        volumes[i] = max(100, vol_val)
+        base_v = int(rng.lognormal(mean=9.0, sigma=0.6))
+        volumes[t] = int(base_v * u_shape[t])
         
     df = pd.DataFrame({
         "Open": np.round(opens, 2),
@@ -229,6 +212,6 @@ def generate_synthetic_intraday_data(
         "Close": np.round(closes, 2),
         "Adj Close": np.round(closes, 2),
         "Volume": volumes
-    }, index=pd.DatetimeIndex(timestamps))
+    }, index=dates)
     df.index.name = "Date"
     return df
