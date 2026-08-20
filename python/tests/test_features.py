@@ -30,7 +30,12 @@ def test_technical_features_calculation():
         "macd_line_norm", "macd_signal_norm", "bb_pct_b",
         "natr_14", "stoch_k", "roc_5", "volume_ratio_20", "zscore_20d",
         "garman_klass_vol_20", "parkinson_vol_20", "cmf_20",
-        "overnight_gap", "intraday_return"
+        "overnight_gap", "intraday_return",
+        "supertrend_dir", "supertrend_dist",
+        "ttm_squeeze_on", "ttm_squeeze_momentum",
+        "ema_ribbon_alignment", "ema_ribbon_spread",
+        "donchian_20_pos", "donchian_breakout_20",
+        "vpt_norm", "rvol_20", "hma_14_ratio"
     ]
     for col in expected_cols:
         assert col in tech.columns, f"Missing feature: {col}"

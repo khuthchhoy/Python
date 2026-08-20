@@ -68,10 +68,16 @@ def test_api_screener(client):
     response = client.get("/api/screener?timeframe=1w")
     assert response.status_code == 200
     items = response.json()
-    assert len(items) >= 1
+    assert len(items) >= 5
     assert "ticker" in items[0]
+    assert "current_price" in items[0]
+    assert "change" in items[0]
+    assert "change_pct" in items[0]
+    assert "predicted_price" in items[0]
     assert "action" in items[0]
     assert "composite_score" in items[0]
+    assert items[0]["current_price"] > 0
+    assert items[0]["predicted_price"] > 0
 
 
 def test_api_watchlist(client):
