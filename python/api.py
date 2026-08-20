@@ -231,6 +231,8 @@ class QuoteResponse(BaseModel):
 class ScreenerItem(BaseModel):
     ticker: str
     current_price: float
+    change: float = 0.0
+    change_pct: float = 0.0
     predicted_price: float
     predicted_return_pct: float
     signal: str
@@ -563,6 +565,7 @@ def _fast_watchlist_item(ticker: str, timeframe: str = "1w") -> WatchlistTickerI
             history_days=45,
             synthetic=False
         )
+        _FORECAST_CACHE[cache_key] = (time.time(), fc)
         
         comp_score = 50.0
         if fc.factor_scores:
@@ -896,34 +899,54 @@ class TradeOrderRequest(BaseModel):
     dollar_amount: Optional[float] = None
 
 
+def _scan_screener_item(t: str, tf: str) -> ScreenerItem:
+    # 1. Fetch live quote with change and change_pct
+    q = None
+    try:
+        q = get_quote(t)
+    except Exception:
+        pass
+        
+    item = _fast_watchlist_item(t, timeframe=tf)
+    cur_p = q.price if (q and q.price > 0) else item.current_price
+    chg = q.change if q else 0.0
+    chg_pct = q.change_pct if q else 0.0
+    
+    # Anchor predicted price to true current price
+    pred_p = round(cur_p * (1.0 + item.predicted_return_pct / 100.0), 2)
+    
+    comp = item.composite_score or 50.0
+    # Dynamic risk metrics derived from composite health and predicted magnitude
+    dyn_sharpe = round(float(np.clip(1.0 + (comp - 50.0) / 30.0 + abs(item.predicted_return_pct) / 6.0, 0.4, 3.5)), 2)
+    dyn_rrr = round(max(1.2, float(abs(item.predicted_return_pct) / 2.0)), 2)
+    
+    return ScreenerItem(
+        ticker=item.ticker,
+        current_price=cur_p,
+        change=chg,
+        change_pct=chg_pct,
+        predicted_price=pred_p,
+        predicted_return_pct=item.predicted_return_pct,
+        signal=item.signal,
+        action=item.action,
+        direction_prob=item.direction_prob,
+        confidence_score=round(float(abs(item.direction_prob - 0.5) * 120.0 + 35.0), 1),
+        composite_score=comp,
+        sharpe_ratio=dyn_sharpe,
+        risk_reward_ratio=dyn_rrr
+    )
+
+
 @app.get("/api/screener", response_model=List[ScreenerItem])
 def get_market_screener(
     timeframe: str = Query("1w", description="Timeframe: 1d, 1w")
 ):
     """Scans and ranks high-liquidity market leaders by AI opportunity score and factor health."""
-    screener_tickers = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "SPY"]
-    results: List[ScreenerItem] = []
+    import concurrent.futures
+    screener_tickers = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "SPY", "QQQ", "AMD", "PLTR", "DELL", "NFLX", "AVGO"]
     
-    for t in screener_tickers:
-        item = _fast_watchlist_item(t, timeframe=timeframe)
-        comp = item.composite_score or 50.0
-        # Dynamic risk metrics derived from composite health and predicted magnitude
-        dyn_sharpe = round(float(np.clip(1.0 + (comp - 50.0) / 30.0 + abs(item.predicted_return_pct) / 6.0, 0.4, 3.2)), 2)
-        dyn_rrr = round(max(1.2, float(abs(item.predicted_return_pct) / 2.0)), 2)
-        
-        results.append(ScreenerItem(
-            ticker=item.ticker,
-            current_price=item.current_price,
-            predicted_price=item.predicted_price,
-            predicted_return_pct=item.predicted_return_pct,
-            signal=item.signal,
-            action=item.action,
-            direction_prob=item.direction_prob,
-            confidence_score=round(float(abs(item.direction_prob - 0.5) * 120.0 + 35.0), 1),
-            composite_score=comp,
-            sharpe_ratio=dyn_sharpe,
-            risk_reward_ratio=dyn_rrr
-        ))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(screener_tickers), 10)) as executor:
+        results = list(executor.map(lambda t: _scan_screener_item(t, tf=timeframe), screener_tickers))
             
     # Sort descending by predicted return
     results.sort(key=lambda item: item.predicted_return_pct, reverse=True)
