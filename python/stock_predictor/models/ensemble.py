@@ -189,8 +189,22 @@ class EnsembleStockPredictor(BaseStockModel):
             
         attn_weights = self.lstm_model.get_temporal_attention_weights()
         attn_list = [float(w) for w in attn_weights] if attn_weights is not None else None
-        
-        # Build Multi-Horizon Term Structure Path
+
+        # 3. Analytics & Intelligence Pipeline
+        eval_df = raw_df if raw_df is not None and len(raw_df) > 5 else pd.DataFrame({
+            "Open": [current_price * 0.99, current_price * 0.995, current_price],
+            "High": [current_price * 1.01, current_price * 1.005, current_price * 1.01],
+            "Low": [current_price * 0.985, current_price * 0.99, current_price * 0.995],
+            "Close": [current_price * 0.995, current_price, current_price],
+            "Volume": [1000000, 1200000, 1100000]
+        })
+
+        regime_info = self.regime_detector.detect_regime(eval_df, benchmarks=benchmarks)
+        sr_levels = self.sr_engine.calculate_levels(eval_df)
+        detected_patterns = self.pattern_detector.detect_patterns(eval_df)
+        factor_scores = self.factor_scorer.compute_factor_scores(eval_df)
+
+        # Build Multi-Horizon Term Structure Path using Quantitative Term-Structure Modeling
         if is_intraday:
             milestones = [("10m", 10), ("20m", 20), ("30m", 30), ("1h", 60), ("2h", 120), ("4h", 240)]
         else:
@@ -199,15 +213,30 @@ class EnsembleStockPredictor(BaseStockModel):
         base_mins = max(1, minutes_ahead)
         multi_horizon_path: List[HorizonPoint] = []
         
+        # Volatility estimation for diffusion cone
+        daily_vol = max(0.012, abs(high_ret_val - low_ret_val) * 0.5)
+        trend_inertia = float(np.clip(factor_scores.trend_score / 100.0, 0.3, 1.2))
+        
         for m_tf, m_mins in milestones:
             time_ratio = float(m_mins) / float(base_mins)
-            scaled_ret = pred_return * (time_ratio ** 0.75)
+            
+            # Term structure scaling with regime inertia and convex growth
+            if time_ratio <= 1.0:
+                scaled_ret = pred_return * (time_ratio ** (0.70 / trend_inertia))
+            else:
+                scaled_ret = pred_return * (time_ratio ** (0.60 * trend_inertia))
+                
             scaled_ret_pct = float((np.exp(scaled_ret) - 1.0) * 100.0)
             
             p_m = float(current_price * np.exp(scaled_ret))
-            half_width = max(0.005, (high_ret_val - low_ret_val) * 0.5 * np.sqrt(time_ratio))
+            # Square root of time diffusion expansion for confidence intervals
+            half_width = max(0.005, daily_vol * np.sqrt(time_ratio))
             p_m_low = float(current_price * np.exp(scaled_ret - half_width))
             p_m_high = float(current_price * np.exp(scaled_ret + half_width))
+            
+            # Enforce non-crossing monotonicity
+            p_m_low = min(p_m_low, p_m * 0.998)
+            p_m_high = max(p_m_high, p_m * 1.002)
             
             m_dir = "BULLISH" if scaled_ret_pct > 0.1 else ("BEARISH" if scaled_ret_pct < -0.1 else "NEUTRAL")
             
@@ -227,20 +256,6 @@ class EnsembleStockPredictor(BaseStockModel):
                 direction=m_dir,
                 target_time=m_target_str
             ))
-
-        # 3. Analytics & Intelligence Pipeline
-        eval_df = raw_df if raw_df is not None and len(raw_df) > 5 else pd.DataFrame({
-            "Open": [current_price * 0.99, current_price * 0.995, current_price],
-            "High": [current_price * 1.01, current_price * 1.005, current_price * 1.01],
-            "Low": [current_price * 0.985, current_price * 0.99, current_price * 0.995],
-            "Close": [current_price * 0.995, current_price, current_price],
-            "Volume": [1000000, 1200000, 1100000]
-        })
-
-        regime_info = self.regime_detector.detect_regime(eval_df, benchmarks=benchmarks)
-        sr_levels = self.sr_engine.calculate_levels(eval_df)
-        detected_patterns = self.pattern_detector.detect_patterns(eval_df)
-        factor_scores = self.factor_scorer.compute_factor_scores(eval_df)
         
         trade_plan = self.trade_planner.generate_plan(
             current_price=current_price,

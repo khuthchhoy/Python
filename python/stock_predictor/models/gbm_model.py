@@ -52,6 +52,7 @@ class GBMStockModel(BaseStockModel):
         
         # 1. Train Point Forecaster
         self.model_point = HistGradientBoostingRegressor(
+            loss="squared_error",
             max_iter=self.config.xgb_n_estimators,
             learning_rate=self.config.xgb_learning_rate,
             max_depth=self.config.xgb_max_depth,
