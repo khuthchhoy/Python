@@ -155,4 +155,86 @@ def calculate_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     # Rolling skewness of 1-day returns
     feats["skew_20d"] = feats["return_1d"].rolling(window=20, min_periods=10).skew().fillna(0.0)
     
+    # 14. SuperTrend Volatility & Regime Filter (ATR 10, Multiplier 3.0)
+    atr_10 = true_range.rolling(window=10, min_periods=3).mean()
+    hl2 = (high + low) / 2.0
+    basic_upper = hl2 + (3.0 * atr_10)
+    basic_lower = hl2 - (3.0 * atr_10)
+    supertrend = pd.Series(index=df.index, dtype=float)
+    supertrend_dir = pd.Series(index=df.index, dtype=float)
+    
+    # Vectorized iterative SuperTrend computation
+    st_val = close.iloc[0] if len(close) > 0 else 0.0
+    st_dir = 1.0
+    for idx, (c_val, bu_val, bl_val) in enumerate(zip(close, basic_upper, basic_lower)):
+        if np.isnan(bu_val) or np.isnan(bl_val):
+            supertrend.iloc[idx] = c_val
+            supertrend_dir.iloc[idx] = 1.0
+            continue
+        if st_dir == 1.0:
+            st_val = max(bl_val, st_val) if c_val >= st_val else bu_val
+            st_dir = 1.0 if c_val >= st_val else -1.0
+        else:
+            st_val = min(bu_val, st_val) if c_val <= st_val else bl_val
+            st_dir = -1.0 if c_val <= st_val else 1.0
+        supertrend.iloc[idx] = st_val
+        supertrend_dir.iloc[idx] = st_dir
+        
+    feats["supertrend_dir"] = supertrend_dir
+    feats["supertrend_dist"] = (close - supertrend) / (close + 1e-8)
+    
+    # 15. TTM Volatility Squeeze (Bollinger Bands inside Keltner Channel)
+    kc_mid = close.rolling(window=20, min_periods=5).mean()
+    kc_range = atr_14.rolling(window=20, min_periods=5).mean()
+    kc_upper = kc_mid + (1.5 * kc_range)
+    kc_lower = kc_mid - (1.5 * kc_range)
+    
+    # Squeeze is ON when BB is completely inside KC (volatility compression)
+    squeeze_on = ((bb_lower > kc_lower) & (bb_upper < kc_upper)).astype(float)
+    feats["ttm_squeeze_on"] = squeeze_on
+    
+    # Squeeze momentum (delta from mid price)
+    hl_mid = (high.rolling(window=20, min_periods=5).max() + low.rolling(window=20, min_periods=5).min()) / 2.0
+    squeeze_mid = (hl_mid + kc_mid) / 2.0
+    feats["ttm_squeeze_momentum"] = (close - squeeze_mid) / (close + 1e-8)
+    
+    # 16. Multi-Period EMA Ribbon (9, 21, 34, 55, 89)
+    ema_9 = close.ewm(span=9, adjust=False).mean()
+    ema_21 = close.ewm(span=21, adjust=False).mean()
+    ema_34 = close.ewm(span=34, adjust=False).mean()
+    ema_55 = close.ewm(span=55, adjust=False).mean()
+    ema_89 = close.ewm(span=89, adjust=False).mean()
+    
+    ribbon_bullish = ((ema_9 > ema_21) & (ema_21 > ema_34) & (ema_34 > ema_55) & (ema_55 > ema_89)).astype(float)
+    ribbon_bearish = ((ema_9 < ema_21) & (ema_21 < ema_34) & (ema_34 < ema_55) & (ema_55 < ema_89)).astype(float)
+    feats["ema_ribbon_alignment"] = ribbon_bullish - ribbon_bearish
+    feats["ema_ribbon_spread"] = (ema_9 - ema_89) / (close + 1e-8)
+    
+    # 17. Donchian Breakout Channels (Turtle 20 & 55 Channels)
+    donchian_20_high = high.rolling(window=20, min_periods=5).max()
+    donchian_20_low = low.rolling(window=20, min_periods=5).min()
+    donchian_55_high = high.rolling(window=55, min_periods=10).max()
+    donchian_55_low = low.rolling(window=55, min_periods=10).min()
+    
+    feats["donchian_20_pos"] = (close - donchian_20_low) / ((donchian_20_high - donchian_20_low) + 1e-8)
+    feats["donchian_55_pos"] = (close - donchian_55_low) / ((donchian_55_high - donchian_55_low) + 1e-8)
+    feats["donchian_breakout_20"] = ((close >= donchian_20_high.shift(1)).astype(float) - (close <= donchian_20_low.shift(1)).astype(float))
+    
+    # 18. Volume Price Trend (VPT) & Relative Volume (RVOL)
+    price_pct_change = close.pct_change().fillna(0.0)
+    vpt = (price_pct_change * vol).cumsum()
+    vpt_sma = vpt.rolling(window=20, min_periods=5).mean()
+    feats["vpt_norm"] = (vpt - vpt_sma) / (vpt.abs().rolling(window=20, min_periods=5).mean() + 1e-8)
+    feats["rvol_20"] = vol / (vol_sma_20 + 1e-8)
+    
+    # 19. Hull Moving Average (HMA 14 - low lag trend tracking)
+    half_period = 7
+    full_period = 14
+    sqrt_period = int(np.sqrt(full_period))
+    wma_half = close.ewm(span=half_period, adjust=False).mean()
+    wma_full = close.ewm(span=full_period, adjust=False).mean()
+    diff_wma = (2.0 * wma_half) - wma_full
+    hma_14 = diff_wma.ewm(span=sqrt_period, adjust=False).mean()
+    feats["hma_14_ratio"] = (close - hma_14) / (close + 1e-8)
+    
     return feats
