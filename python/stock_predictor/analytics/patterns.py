@@ -1,25 +1,29 @@
-"""Vectorized Candlestick & Technical Indicator Pattern Recognition."""
+"""Vectorized Candlestick, Volume Profile & Technical Indicator Pattern Recognition."""
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Any
 import numpy as np
 import pandas as pd
 
 
 @dataclass
 class DetectedPattern:
-    name: str                   # e.g., "RSI Bullish Divergence"
-    category: str               # "MOMENTUM", "VOLATILITY", "CANDLESTICK", "TREND"
+    name: str                   # e.g., "Volume Accumulation Setup #1"
+    category: str               # "VOLUME_PROFILE", "MOMENTUM", "VOLATILITY", "CANDLESTICK", "TREND"
     bias: str                   # "BULLISH", "BEARISH", "NEUTRAL"
     confidence: float           # [0, 100]
     description: str
 
 
 class PatternDetector:
-    """Detects multi-timeframe structural chart patterns and technical indicator divergences."""
+    """Detects multi-timeframe structural chart patterns, Volume Profile setups, and technical indicator divergences."""
 
-    def detect_patterns(self, df: pd.DataFrame) -> List[DetectedPattern]:
-        if len(df) < 15:
+    def detect_patterns(
+        self,
+        df: pd.DataFrame,
+        volume_profile: Optional[Any] = None
+    ) -> List[DetectedPattern]:
+        if len(df) < 10:
             return []
 
         patterns: List[DetectedPattern] = []
@@ -35,7 +39,18 @@ class PatternDetector:
         cur_low = float(low.iloc[-1])
         cur_vol = float(vol.iloc[-1])
 
-        # 1. Multi-Period RSI Calculation for Divergence
+        # 1. Trader Dale Volume Profile Setup Patterns
+        if volume_profile and volume_profile.detected_setups:
+            for s in volume_profile.detected_setups:
+                patterns.append(DetectedPattern(
+                    name=s.name,
+                    category="VOLUME_PROFILE",
+                    bias=s.bias,
+                    confidence=s.confidence,
+                    description=s.description
+                ))
+
+        # 2. Multi-Period RSI Calculation for Divergence
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -50,8 +65,6 @@ class PatternDetector:
         if len(df) >= 20:
             sub_p = close.tail(20)
             sub_rsi = rsi.tail(20)
-            p_min_idx = sub_p.idxmin()
-            rsi_min_idx = sub_rsi.idxmin()
 
             # Bullish Divergence: Recent price lower than past low, but RSI is higher
             if cur_close <= sub_p.min() * 1.01 and cur_rsi > sub_rsi.iloc[0] + 4.0 and cur_rsi < 45.0:
@@ -73,7 +86,7 @@ class PatternDetector:
                     description=f"Price pushed higher while RSI ({cur_rsi:.1f}) printed a lower high, indicating momentum deceleration."
                 ))
 
-        # 2. Moving Average Crosses (EMA 20 & EMA 50)
+        # 3. Moving Average Crosses (EMA 20 & EMA 50)
         if len(df) >= 30:
             ema_20 = close.ewm(span=20, adjust=False).mean()
             ema_50 = close.ewm(span=50, adjust=False).mean()
@@ -95,7 +108,7 @@ class PatternDetector:
                     description="20 EMA has crossed below the 50 EMA, indicating increasing downward structural pressure."
                 ))
 
-        # 3. Bollinger Band Squeeze / Breakout
+        # 4. Bollinger Band Squeeze / Breakout
         if len(df) >= 20:
             bb_mid = close.rolling(20, min_periods=5).mean()
             bb_std = close.rolling(20, min_periods=5).std()
@@ -122,7 +135,7 @@ class PatternDetector:
                     description="Price broke above upper Bollinger Band on elevated volume, confirming momentum continuation."
                 ))
 
-        # 4. Candlestick Formations
+        # 5. Candlestick Formations
         body = abs(cur_close - cur_open)
         bar_range = cur_high - cur_low + 1e-8
         lower_shadow = min(cur_close, cur_open) - cur_low
@@ -161,7 +174,7 @@ class PatternDetector:
                     description="Current green candle completely engulfs previous bearish candle, signaling a shift in control to buyers."
                 ))
 
-        # 5. Volume Climax / Surge
+        # 6. Volume Climax / Surge
         vol_mean_20 = float(vol.tail(20).mean()) if len(df) >= 20 else cur_vol
         if cur_vol >= vol_mean_20 * 2.2:
             patterns.append(DetectedPattern(

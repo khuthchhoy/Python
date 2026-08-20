@@ -12,6 +12,7 @@ from stock_predictor.models.lstm_model import LSTMStockModel
 from stock_predictor.models.classifier import generate_trading_signal
 from stock_predictor.analytics.regime import MarketRegimeDetector
 from stock_predictor.analytics.support_resistance import SupportResistanceEngine
+from stock_predictor.analytics.volume_profile import VolumeProfileDetector
 from stock_predictor.analytics.patterns import PatternDetector
 from stock_predictor.analytics.factors import QuantitativeFactorScorer
 from stock_predictor.analytics.trade_planner import AlgorithmicTradePlanner
@@ -28,7 +29,7 @@ class EnsembleStockPredictor(BaseStockModel):
     - PyTorch Temporal Sequence Model with Attention (capturing sequential temporal patterns)
     - Quantile Regressors (estimating 10th - 90th percentile bounds)
     - Continuous Self-Learning Engine (adaptive dynamic weighting & empirical feedback)
-    - Autonomous AI Stock Analyst (institutional trade thesis, factor scores & execution plan)
+    - Autonomous AI Stock Analyst with Volume Profile Intelligence (Trader Dale methodology)
     """
 
     def __init__(
@@ -49,12 +50,14 @@ class EnsembleStockPredictor(BaseStockModel):
         self.is_fitted = False
 
         # Analytics components
+        self.vp_detector = VolumeProfileDetector()
         self.regime_detector = MarketRegimeDetector()
         self.sr_engine = SupportResistanceEngine()
         self.pattern_detector = PatternDetector()
         self.factor_scorer = QuantitativeFactorScorer()
         self.trade_planner = AlgorithmicTradePlanner()
         self.ai_analyst = AIStockAnalyst()
+
 
     def fit(
         self,
@@ -190,7 +193,7 @@ class EnsembleStockPredictor(BaseStockModel):
         attn_weights = self.lstm_model.get_temporal_attention_weights()
         attn_list = [float(w) for w in attn_weights] if attn_weights is not None else None
 
-        # 3. Analytics & Intelligence Pipeline
+        # 3. Analytics & Intelligence Pipeline with Volume Profile Confluence
         eval_df = raw_df if raw_df is not None and len(raw_df) > 5 else pd.DataFrame({
             "Open": [current_price * 0.99, current_price * 0.995, current_price],
             "High": [current_price * 1.01, current_price * 1.005, current_price * 1.01],
@@ -199,10 +202,11 @@ class EnsembleStockPredictor(BaseStockModel):
             "Volume": [1000000, 1200000, 1100000]
         })
 
+        volume_profile = self.vp_detector.compute_volume_profile(eval_df)
         regime_info = self.regime_detector.detect_regime(eval_df, benchmarks=benchmarks)
-        sr_levels = self.sr_engine.calculate_levels(eval_df)
-        detected_patterns = self.pattern_detector.detect_patterns(eval_df)
-        factor_scores = self.factor_scorer.compute_factor_scores(eval_df)
+        sr_levels = self.sr_engine.calculate_levels(eval_df, volume_profile=volume_profile)
+        detected_patterns = self.pattern_detector.detect_patterns(eval_df, volume_profile=volume_profile)
+        factor_scores = self.factor_scorer.compute_factor_scores(eval_df, volume_profile=volume_profile)
 
         # Build Multi-Horizon Term Structure Path using Quantitative Term-Structure Modeling
         if is_intraday:
@@ -266,7 +270,8 @@ class EnsembleStockPredictor(BaseStockModel):
             upper_bound_price=upper_price,
             levels=sr_levels,
             regime=regime_info,
-            recent_df=eval_df
+            recent_df=eval_df,
+            volume_profile=volume_profile
         )
 
         # 4. Continuous Self-Learning Journaling
@@ -304,7 +309,8 @@ class EnsembleStockPredictor(BaseStockModel):
             factors=factor_scores,
             patterns=detected_patterns,
             trade_plan=trade_plan,
-            learning_telemetry=learning_telemetry.__dict__ if hasattr(learning_telemetry, "__dict__") else None
+            learning_telemetry=learning_telemetry.__dict__ if hasattr(learning_telemetry, "__dict__") else None,
+            volume_profile=volume_profile
         )
 
         pattern_names = [p.name for p in detected_patterns]
@@ -335,5 +341,8 @@ class EnsembleStockPredictor(BaseStockModel):
             market_regime=regime_info,
             analyst_report=analyst_report,
             learning_telemetry=learning_telemetry,
-            detected_patterns=pattern_names
+            detected_patterns=pattern_names,
+            volume_profile=volume_profile,
+            volume_setups=volume_profile.detected_setups if volume_profile else []
         )
+

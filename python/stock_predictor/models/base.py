@@ -48,6 +48,9 @@ class ForecastResult:
     analyst_report: Optional[Any] = None
     learning_telemetry: Optional[Any] = None
     detected_patterns: Optional[List[str]] = None
+    volume_profile: Optional[Any] = None
+    volume_setups: Optional[List[Any]] = None
+
 
 
 class BaseStockModel(ABC):
